@@ -204,6 +204,71 @@ def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
     return results
 
 
+def print_results_to_terminal(
+    domain: str,
+    subdomains: list[str],
+    live_hosts: list[dict],
+    nmap_results: dict[str, list[dict]],
+):
+    """Print a full summary of all findings directly to the terminal,
+    in addition to the HTML report. Output is exactly what was found —
+    no values are invented or guessed."""
+
+    status_color = {
+        "2": C.GREEN,
+        "3": C.YELLOW,
+        "4": C.YELLOW,
+        "5": C.RED,
+    }
+
+    def color_for(status_code):
+        return status_color.get(str(status_code)[:1], C.DIM)
+
+    print()
+    print(f"{C.BOLD_GREEN}{'=' * 70}{C.RESET}")
+    print(f"{C.BOLD_GREEN} RESULTS SUMMARY — {domain}{C.RESET}")
+    print(f"{C.BOLD_GREEN}{'=' * 70}{C.RESET}")
+
+    # ---- Live hosts table ----
+    print()
+    print(f"{C.CYAN}{C.BOLD}LIVE HOSTS ({len(live_hosts)}){C.RESET}")
+    if live_hosts:
+        print(f"{C.DIM}{'-' * 100}{C.RESET}")
+        print(f"{'URL':<45} {'STATUS':<8} {'TITLE':<30} {'TECH'}")
+        print(f"{C.DIM}{'-' * 100}{C.RESET}")
+        for host in live_hosts:
+            url = (host["url"] or "-")[:44]
+            status = str(host["status_code"] or "-")
+            title = (host["title"] or "-")[:29]
+            tech = host["tech"] or "-"
+            c = color_for(host["status_code"])
+            print(f"{url:<45} {c}{status:<8}{C.RESET} {title:<30} {tech}")
+    else:
+        print(f"{C.DIM}  No live hosts found.{C.RESET}")
+
+    # ---- Nmap results table ----
+    if nmap_results:
+        print()
+        print(f"{C.CYAN}{C.BOLD}PORT SCAN RESULTS (nmap, top 100 ports){C.RESET}")
+        print(f"{C.DIM}{'-' * 70}{C.RESET}")
+        for host, ports in sorted(nmap_results.items()):
+            if ports:
+                port_list = ", ".join(f"{p['port']}/{p['service']}" for p in ports)
+                print(f"  {C.CYAN}{host}{C.RESET} -> {C.GREEN}{port_list}{C.RESET}")
+            else:
+                print(f"  {C.DIM}{host} -> no open ports found{C.RESET}")
+
+    # ---- Subdomains list ----
+    print()
+    print(f"{C.CYAN}{C.BOLD}ALL DISCOVERED SUBDOMAINS ({len(subdomains)}){C.RESET}")
+    print(f"{C.DIM}{'-' * 70}{C.RESET}")
+    for sub in subdomains:
+        print(f"  {C.DIM}-{C.RESET} {sub}")
+
+    print()
+    print(f"{C.BOLD_GREEN}{'=' * 70}{C.RESET}")
+
+
 def generate_html_report(
     domain: str,
     subdomains: list[str],
@@ -454,6 +519,8 @@ def main():
             nmap_results = run_nmap(scan_targets)
         else:
             print(f"{C.YELLOW}[!]{C.RESET} Authorization not confirmed. Skipping nmap scan.")
+
+    print_results_to_terminal(domain, subdomains, live_hosts, nmap_results)
 
     generate_html_report(domain, subdomains, live_hosts, nmap_results, output_path)
 
