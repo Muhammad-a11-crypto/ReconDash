@@ -57,17 +57,24 @@ def run_httpx(subdomains: list[str], timeout: int = 180) -> list[dict]:
     """
     Run httpx against a list of subdomains to find live hosts.
     Returns a list of dicts with url, status_code, title, tech, etc.
+
+    Note: On Kali Linux, ProjectDiscovery's httpx is packaged as
+    'httpx-toolkit' to avoid a naming conflict with the Python httpx
+    package. This function tries 'httpx-toolkit' first, then falls
+    back to 'httpx'.
     """
     if not subdomains:
         return []
 
-    print(f"[*] Probing {len(subdomains)} hosts with httpx ...")
+    httpx_bin = "httpx-toolkit" if check_tool("httpx-toolkit") else "httpx"
+
+    print(f"[*] Probing {len(subdomains)} hosts with {httpx_bin} ...")
     input_data = "\n".join(subdomains)
 
     try:
         result = subprocess.run(
             [
-                "httpx",
+                httpx_bin,
                 "-silent",
                 "-json",
                 "-status-code",
@@ -84,7 +91,7 @@ def run_httpx(subdomains: list[str], timeout: int = 180) -> list[dict]:
         print("[!] httpx timed out, using partial results if any.")
         return []
     except FileNotFoundError:
-        print("[!] httpx not found in PATH.")
+        print(f"[!] {httpx_bin} not found in PATH.")
         return []
 
     live_hosts = []
@@ -260,7 +267,12 @@ def main():
     print(" ReconDash - All-in-One Recon Dashboard")
     print("=" * 55)
 
-    missing = [t for t in ("subfinder", "httpx") if not check_tool(t)]
+    missing = []
+    if not check_tool("subfinder"):
+        missing.append("subfinder")
+    if not check_tool("httpx") and not check_tool("httpx-toolkit"):
+        missing.append("httpx (or httpx-toolkit)")
+
     if missing:
         print(f"[!] Missing required tools: {', '.join(missing)}")
         print("[!] Install them and ensure they're in your $PATH before running.")
