@@ -48,6 +48,28 @@ class C:
     BOLD = "\033[1m"
 
 
+# Verbosity level: "quiet", "normal" (default), or "verbose".
+# Set once in main() based on CLI flags, read everywhere else.
+VERBOSITY = "normal"
+
+
+def vprint(message: str, level: str = "normal"):
+    """
+    Print respecting the global VERBOSITY setting.
+    level="normal"  -> shown in normal and verbose mode, hidden in quiet mode
+    level="verbose" -> shown only in verbose mode
+    level="always"  -> always shown, even in quiet mode (e.g. final report path)
+    """
+    if level == "always":
+        print(message)
+    elif level == "verbose":
+        if VERBOSITY == "verbose":
+            print(message)
+    else:  # normal
+        if VERBOSITY != "quiet":
+            print(message)
+
+
 def check_tool(name: str) -> bool:
     """Check if an external tool is available in PATH."""
     return shutil.which(name) is not None
@@ -55,7 +77,8 @@ def check_tool(name: str) -> bool:
 
 def run_subfinder(domain: str, timeout: int = 120) -> list[str]:
     """Run subfinder against the domain and return a list of subdomains."""
-    print(f"{C.GREEN}[*]{C.RESET} Running subfinder on {C.CYAN}{domain}{C.RESET} ...")
+    vprint(f"{C.GREEN}[*]{C.RESET} Running subfinder on {C.CYAN}{domain}{C.RESET} ...")
+    vprint(f"{C.DIM}    command: subfinder -d {domain} -silent{C.RESET}", level="verbose")
     try:
         result = subprocess.run(
             ["subfinder", "-d", domain, "-silent"],
@@ -64,14 +87,17 @@ def run_subfinder(domain: str, timeout: int = 120) -> list[str]:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        print(f"{C.YELLOW}[!]{C.RESET} subfinder timed out, using partial results if any.")
+        vprint(f"{C.YELLOW}[!]{C.RESET} subfinder timed out, using partial results if any.")
         return []
     except FileNotFoundError:
-        print(f"{C.RED}[!]{C.RESET} subfinder not found in PATH.")
+        vprint(f"{C.RED}[!]{C.RESET} subfinder not found in PATH.")
         return []
 
     subs = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    print(f"{C.GREEN}[+]{C.RESET} subfinder found {C.BOLD}{len(subs)}{C.RESET} subdomains.")
+    vprint(f"{C.GREEN}[+]{C.RESET} subfinder found {C.BOLD}{len(subs)}{C.RESET} subdomains.")
+    if VERBOSITY == "verbose":
+        for s in subs:
+            vprint(f"{C.DIM}    found: {s}{C.RESET}", level="verbose")
     return subs
 
 
@@ -90,7 +116,8 @@ def run_httpx(subdomains: list[str], timeout: int = 180) -> list[dict]:
 
     httpx_bin = "httpx-toolkit" if check_tool("httpx-toolkit") else "httpx"
 
-    print(f"{C.GREEN}[*]{C.RESET} Probing {len(subdomains)} hosts with {httpx_bin} ...")
+    vprint(f"{C.GREEN}[*]{C.RESET} Probing {len(subdomains)} hosts with {httpx_bin} ...")
+    vprint(f"{C.DIM}    command: {httpx_bin} -silent -json -status-code -title -tech-detect -follow-redirects{C.RESET}", level="verbose")
     input_data = "\n".join(subdomains)
 
     try:
@@ -110,10 +137,10 @@ def run_httpx(subdomains: list[str], timeout: int = 180) -> list[dict]:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        print(f"{C.YELLOW}[!]{C.RESET} httpx timed out, using partial results if any.")
+        vprint(f"{C.YELLOW}[!]{C.RESET} httpx timed out, using partial results if any.")
         return []
     except FileNotFoundError:
-        print(f"{C.RED}[!]{C.RESET} {httpx_bin} not found in PATH.")
+        vprint(f"{C.RED}[!]{C.RESET} {httpx_bin} not found in PATH.")
         return []
 
     live_hosts = []
@@ -123,20 +150,20 @@ def run_httpx(subdomains: list[str], timeout: int = 180) -> list[dict]:
             continue
         try:
             data = json.loads(line)
-            live_hosts.append(
-                {
-                    "url": data.get("url", ""),
-                    "host": data.get("host", "") or data.get("input", ""),
-                    "status_code": data.get("status_code", ""),
-                    "title": data.get("title", ""),
-                    "tech": ", ".join(data.get("tech", [])) if data.get("tech") else "",
-                    "webserver": data.get("webserver", ""),
-                }
-            )
+            entry = {
+                "url": data.get("url", ""),
+                "host": data.get("host", "") or data.get("input", ""),
+                "status_code": data.get("status_code", ""),
+                "title": data.get("title", ""),
+                "tech": ", ".join(data.get("tech", [])) if data.get("tech") else "",
+                "webserver": data.get("webserver", ""),
+            }
+            live_hosts.append(entry)
+            vprint(f"{C.DIM}    live: {entry['url']} [{entry['status_code']}]{C.RESET}", level="verbose")
         except json.JSONDecodeError:
             continue
 
-    print(f"{C.GREEN}[+]{C.RESET} httpx found {C.BOLD}{len(live_hosts)}{C.RESET} live hosts.")
+    vprint(f"{C.GREEN}[+]{C.RESET} httpx found {C.BOLD}{len(live_hosts)}{C.RESET} live hosts.")
     return live_hosts
 
 
@@ -159,13 +186,14 @@ def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
     results: dict[str, list[dict]] = {}
 
     if not check_tool("nmap"):
-        print(f"{C.RED}[!]{C.RESET} nmap not found in PATH. Skipping port scan.")
+        vprint(f"{C.RED}[!]{C.RESET} nmap not found in PATH. Skipping port scan.")
         return results
 
     unique_hosts = sorted(set(extract_hostname(h) for h in hosts if h))
 
     for host in unique_hosts:
-        print(f"{C.GREEN}[*]{C.RESET} nmap scanning {C.CYAN}{host}{C.RESET} (top 100 ports) ...")
+        vprint(f"{C.GREEN}[*]{C.RESET} nmap scanning {C.CYAN}{host}{C.RESET} (top 100 ports) ...")
+        vprint(f"{C.DIM}    command: nmap -F -T4 --open -oG - {host}{C.RESET}", level="verbose")
         try:
             proc = subprocess.run(
                 ["nmap", "-F", "-T4", "--open", "-oG", "-", host],
@@ -174,10 +202,10 @@ def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            print(f"{C.YELLOW}[!]{C.RESET} nmap timed out on {host}, skipping.")
+            vprint(f"{C.YELLOW}[!]{C.RESET} nmap timed out on {host}, skipping.")
             continue
         except FileNotFoundError:
-            print(f"{C.RED}[!]{C.RESET} nmap not found in PATH.")
+            vprint(f"{C.RED}[!]{C.RESET} nmap not found in PATH.")
             break
 
         ports = []
@@ -195,9 +223,9 @@ def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
                             ports.append({"port": port_num, "state": state, "service": service or "unknown"})
 
         if ports:
-            print(f"{C.GREEN}[+]{C.RESET} {host}: {C.BOLD}{len(ports)}{C.RESET} open port(s) found.")
+            vprint(f"{C.GREEN}[+]{C.RESET} {host}: {C.BOLD}{len(ports)}{C.RESET} open port(s) found.")
         else:
-            print(f"{C.DIM}[-] {host}: no open ports in top 100.{C.RESET}")
+            vprint(f"{C.DIM}[-] {host}: no open ports in top 100.{C.RESET}")
 
         results[host] = ports
 
@@ -465,6 +493,8 @@ def confirm_authorization(domain: str) -> bool:
 
 
 def main():
+    global VERBOSITY
+
     parser = argparse.ArgumentParser(
         description="ReconDash - All-in-One Recon Dashboard (subfinder + httpx + optional nmap + HTML report)"
     )
@@ -476,7 +506,25 @@ def main():
         help="Also run an nmap port scan (top 100 ports) against discovered live hosts. "
              "ACTIVE scan — requires interactive authorization confirmation.",
     )
+    verbosity_group = parser.add_mutually_exclusive_group()
+    verbosity_group.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show extra detail: exact commands run, every probed host, raw findings as they're discovered.",
+    )
+    verbosity_group.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Show minimal output: skip the banner and progress lines, print only the final results summary.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        VERBOSITY = "verbose"
+    elif args.quiet:
+        VERBOSITY = "quiet"
+    else:
+        VERBOSITY = "normal"
 
     domain = args.domain.strip()
     output_path = args.output or f"recondash_{domain.replace('.', '_')}.html"
@@ -490,7 +538,11 @@ def main():
 ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 {C.RESET}{C.DIM}              All-in-One Recon Dashboard | by Muhammad Zubair{C.RESET}
 """
-    print(banner)
+    vprint(banner)
+    if VERBOSITY == "verbose":
+        vprint(f"{C.DIM}[mode: verbose]{C.RESET}", level="verbose")
+    elif VERBOSITY == "quiet":
+        pass  # banner and mode notice both suppressed in quiet mode
 
     missing = []
     if not check_tool("subfinder"):
@@ -507,7 +559,7 @@ def main():
 
     subdomains = run_subfinder(domain)
     if not subdomains:
-        print(f"{C.YELLOW}[!]{C.RESET} No subdomains found. Exiting.")
+        vprint(f"{C.YELLOW}[!]{C.RESET} No subdomains found. Exiting.")
         sys.exit(0)
 
     live_hosts = run_httpx(subdomains)
@@ -518,15 +570,17 @@ def main():
             scan_targets = [h["host"] or h["url"] for h in live_hosts] if live_hosts else subdomains
             nmap_results = run_nmap(scan_targets)
         else:
-            print(f"{C.YELLOW}[!]{C.RESET} Authorization not confirmed. Skipping nmap scan.")
+            vprint(f"{C.YELLOW}[!]{C.RESET} Authorization not confirmed. Skipping nmap scan.")
 
+    # The full results summary always prints, even in quiet mode —
+    # quiet mode means "skip the noise", not "hide the findings".
     print_results_to_terminal(domain, subdomains, live_hosts, nmap_results)
 
     generate_html_report(domain, subdomains, live_hosts, nmap_results, output_path)
 
-    print(f"{C.GREEN}{'=' * 55}{C.RESET}")
+    vprint(f"{C.GREEN}{'=' * 55}{C.RESET}")
     print(f"{C.GREEN}[+]{C.RESET} Done. Open '{C.CYAN}{output_path}{C.RESET}' in your browser to view the dashboard.")
-    print(f"{C.GREEN}{'=' * 55}{C.RESET}")
+    vprint(f"{C.GREEN}{'=' * 55}{C.RESET}")
 
 
 if __name__ == "__main__":
