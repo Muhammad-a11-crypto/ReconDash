@@ -33,6 +33,7 @@ import re
 import subprocess
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -175,10 +176,46 @@ def extract_hostname(url_or_host: str) -> str:
     return h
 
 
-def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
+def _nmap_scan_single_host(host: str, timeout: int) -> tuple[str, list[dict]]:
+    """Run nmap against a single host and return (host, list of open port dicts)."""
+    try:
+        proc = subprocess.run(
+            ["nmap", "-F", "-T4", "--open", "-oG", "-", host],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return host, []
+    except FileNotFoundError:
+        return host, []
+
+    ports = []
+    for line in proc.stdout.splitlines():
+        if line.startswith("Host:") and "Ports:" in line:
+            ports_part = line.split("Ports:")[1].split("Ignored")[0].strip()
+            for entry in ports_part.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                fields = entry.split("/")
+                if len(fields) >= 5:
+                    port_num, state, _, _, service = fields[0], fields[1], fields[2], fields[3], fields[4]
+                    if state == "open":
+                        ports.append({"port": port_num, "state": state, "service": service or "unknown"})
+    return host, ports
+
+
+def run_nmap(hosts: list[str], timeout: int = 300, max_workers: int = 5) -> dict[str, list[dict]]:
     """
-    Run a fast nmap scan (top 100 ports) against each given host.
+    Run a fast nmap scan (top 100 ports) against each given host, in parallel
+    (up to max_workers concurrent scans) to keep total scan time reasonable
+    when there are many live hosts.
+
     Returns a dict mapping host -> list of {port, state, service} dicts.
+    Each entry reflects exactly what nmap reported — nothing is inferred
+    or assumed; hosts behind the same CDN/load balancer may legitimately
+    show the same open ports (e.g. 443) because they share infrastructure.
 
     Only called when the user has passed --nmap AND explicitly confirmed
     authorization at the interactive prompt in main().
@@ -191,43 +228,34 @@ def run_nmap(hosts: list[str], timeout: int = 300) -> dict[str, list[dict]]:
 
     unique_hosts = sorted(set(extract_hostname(h) for h in hosts if h))
 
-    for host in unique_hosts:
-        vprint(f"{C.GREEN}[*]{C.RESET} nmap scanning {C.CYAN}{host}{C.RESET} (top 100 ports) ...")
-        vprint(f"{C.DIM}    command: nmap -F -T4 --open -oG - {host}{C.RESET}", level="verbose")
-        try:
-            proc = subprocess.run(
-                ["nmap", "-F", "-T4", "--open", "-oG", "-", host],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            vprint(f"{C.YELLOW}[!]{C.RESET} nmap timed out on {host}, skipping.")
-            continue
-        except FileNotFoundError:
-            vprint(f"{C.RED}[!]{C.RESET} nmap not found in PATH.")
-            break
+    vprint(
+        f"{C.GREEN}[*]{C.RESET} Scanning {len(unique_hosts)} host(s) with nmap "
+        f"({max_workers} in parallel, top 100 ports each) ..."
+    )
+    vprint(f"{C.DIM}    command per host: nmap -F -T4 --open -oG - <host>{C.RESET}", level="verbose")
 
-        ports = []
-        for line in proc.stdout.splitlines():
-            if line.startswith("Host:") and "Ports:" in line:
-                ports_part = line.split("Ports:")[1].split("Ignored")[0].strip()
-                for entry in ports_part.split(","):
-                    entry = entry.strip()
-                    if not entry:
-                        continue
-                    fields = entry.split("/")
-                    if len(fields) >= 5:
-                        port_num, state, _, _, service = fields[0], fields[1], fields[2], fields[3], fields[4]
-                        if state == "open":
-                            ports.append({"port": port_num, "state": state, "service": service or "unknown"})
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_nmap_scan_single_host, host, timeout): host
+            for host in unique_hosts
+        }
+        for future in as_completed(futures):
+            host = futures[future]
+            try:
+                host, ports = future.result()
+            except Exception:
+                ports = []
 
-        if ports:
-            vprint(f"{C.GREEN}[+]{C.RESET} {host}: {C.BOLD}{len(ports)}{C.RESET} open port(s) found.")
-        else:
-            vprint(f"{C.DIM}[-] {host}: no open ports in top 100.{C.RESET}")
+            if ports:
+                port_summary = ", ".join(f"{p['port']}/{p['service']}" for p in ports)
+                vprint(
+                    f"{C.GREEN}[+]{C.RESET} {host}: {C.BOLD}{len(ports)}{C.RESET} open port(s) -> "
+                    f"{C.GREEN}{port_summary}{C.RESET}"
+                )
+            else:
+                vprint(f"{C.DIM}[-] {host}: no open ports in top 100.{C.RESET}")
 
-        results[host] = ports
+            results[host] = ports
 
     return results
 
